@@ -10,6 +10,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── Load secrets from Streamlit Cloud if available ───────────────────────────
+# This bridges st.secrets (Streamlit Cloud) and os.getenv (.env local)
+def get_secret(key: str) -> str:
+    try:
+        val = st.secrets.get(key, "")
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.getenv(key, "")
+
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Stock Evaluator AI",
@@ -50,14 +61,33 @@ st.markdown('<p class="main-header">📈 Stock Evaluator AI</p>', unsafe_allow_h
 st.markdown('<p class="sub-header">Earnings analysis · Price targets · News · Dividends — powered by Claude AI</p>', unsafe_allow_html=True)
 
 # ── API Key inputs ─────────────────────────────────────────────────────────────
-with st.expander("⚙️ API Keys (required — stored only for this session)", expanded=not os.getenv("ANTHROPIC_API_KEY")):
+_anthropic_default = get_secret("ANTHROPIC_API_KEY")
+_fmp_default        = get_secret("FMP_API_KEY")
+_news_default       = get_secret("NEWS_API_KEY")
+
+with st.expander("⚙️ API Keys (required — stored only for this session)", expanded=not _anthropic_default):
     col1, col2, col3 = st.columns(3)
     with col1:
-        anthropic_key = st.text_input("Anthropic API Key", value=os.getenv("ANTHROPIC_API_KEY",""), type="password", help="Get at console.anthropic.com")
+        anthropic_key = st.text_input("Anthropic API Key", value=_anthropic_default, type="password", help="Get at console.anthropic.com")
     with col2:
-        fmp_key = st.text_input("FMP API Key (primary data)", value=os.getenv("FMP_API_KEY",""), type="password", help="Free at financialmodelingprep.com — 250 req/day")
+        fmp_key = st.text_input("FMP API Key (primary data)", value=_fmp_default, type="password", help="Free at financialmodelingprep.com — 250 req/day")
     with col3:
-        news_key = st.text_input("News API Key (for news tab)", value=os.getenv("NEWS_API_KEY",""), type="password", help="Free at newsapi.org — 100 req/day")
+        news_key = st.text_input("News API Key (for news tab)", value=_news_default, type="password", help="Free at newsapi.org — 100 req/day")
+
+# ── Diagnostics (shown when secrets appear missing) ───────────────────────────
+if not _anthropic_default or not _fmp_default:
+    with st.expander("🔧 Troubleshooting — click if you're seeing data errors", expanded=False):
+        st.markdown("**Checking Streamlit secrets...**")
+        try:
+            found_keys = list(st.secrets.keys())
+            if found_keys:
+                st.success(f"✅ Streamlit secrets found: {found_keys}")
+            else:
+                st.error("❌ No secrets found. Go to: Streamlit Cloud → your app → ⋮ menu → Settings → Secrets")
+        except Exception as e:
+            st.error(f"❌ Could not read secrets: {e}")
+        st.code('''ANTHROPIC_API_KEY = "sk-ant-api03-your-key-here"\nFMP_API_KEY = "your-fmp-key-here"\nNEWS_API_KEY = "your-newsapi-key-here"''', language="toml")
+        st.caption("Paste the above (with your real keys) into Streamlit Cloud → App Settings → Secrets, then click Save.")
 
 # ── Ticker input ──────────────────────────────────────────────────────────────
 st.markdown("### Enter a Stock Ticker")
