@@ -89,39 +89,42 @@ def av_get(params: dict, api_key: str) -> dict | None:
 def get_stock_data(ticker: str, api_key: str) -> dict:
     """Fetch all needed data from Alpha Vantage. Returns unified data dict."""
 
+    PAUSE = 13  # Alpha Vantage free tier: max 5 requests/min = 1 per 12s to be safe
+
     # 1. Company overview (the main data source — has almost everything)
     overview = av_get({"function": "OVERVIEW", "symbol": ticker}, api_key)
     if not overview or not overview.get("Symbol"):
         raise RuntimeError(
             f"Could not find data for **{ticker}**. "
             f"Please check the ticker symbol is correct (e.g. NVDA, AAPL, TSLA).\n\n"
-            f"Note: Alpha Vantage free tier allows 25 requests/day. If you've run many searches today, you may need to wait until tomorrow."
+            f"Note: Alpha Vantage free tier allows 25 requests/day and 5 per minute. "
+            f"If you searched recently, wait 1 minute and try again."
         )
 
     # 2. Global quote (real-time price)
-    time.sleep(0.5)  # small pause to avoid hitting rate limit
+    time.sleep(PAUSE)
     quote_data = av_get({"function": "GLOBAL_QUOTE", "symbol": ticker}, api_key)
     quote = quote_data.get("Global Quote", {}) if quote_data else {}
 
-    # 3. Income statement (quarterly + annual earnings)
-    time.sleep(0.5)
+    # 3. Income statement
+    time.sleep(PAUSE)
     income_data = av_get({"function": "INCOME_STATEMENT", "symbol": ticker}, api_key)
     annual_reports    = income_data.get("annualReports", [])[:4]    if income_data else []
     quarterly_reports = income_data.get("quarterlyReports", [])[:4] if income_data else []
 
     # 4. Cash flow statement
-    time.sleep(0.5)
+    time.sleep(PAUSE)
     cashflow_data = av_get({"function": "CASH_FLOW", "symbol": ticker}, api_key)
     annual_cashflow    = cashflow_data.get("annualReports", [])[:2]    if cashflow_data else []
     quarterly_cashflow = cashflow_data.get("quarterlyReports", [])[:2] if cashflow_data else []
 
     # 5. Balance sheet
-    time.sleep(0.5)
+    time.sleep(PAUSE)
     balance_data = av_get({"function": "BALANCE_SHEET", "symbol": ticker}, api_key)
     annual_balance = balance_data.get("annualReports", [])[:2] if balance_data else []
 
     # 6. Earnings (EPS history + estimates)
-    time.sleep(0.5)
+    time.sleep(PAUSE)
     earnings_data = av_get({"function": "EARNINGS", "symbol": ticker}, api_key)
     annual_earnings    = earnings_data.get("annualEarnings", [])[:4]    if earnings_data else []
     quarterly_earnings = earnings_data.get("quarterlyEarnings", [])[:4] if earnings_data else []
@@ -301,7 +304,7 @@ if analyze_btn and ticker_input:
 
     client = anthropic.Anthropic(api_key=anthropic_key)
 
-    with st.spinner(f"Fetching data for {ticker} from Alpha Vantage…"):
+    with st.spinner(f"Fetching data for {ticker} from Alpha Vantage… (this takes ~60 seconds on the free plan)"):
         try:
             data = get_stock_data(ticker, av_key)
         except Exception as e:
