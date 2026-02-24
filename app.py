@@ -93,7 +93,7 @@ if not _anthropic_default or not _fmp_default:
 st.markdown("### Enter a Stock Ticker")
 col_input, col_btn = st.columns([3, 1])
 with col_input:
-    ticker_input = st.text_input("", placeholder="e.g. AAPL, MSFT, NVDA, TSLA", label_visibility="collapsed")
+    ticker_input = st.text_input("Stock Ticker", placeholder="e.g. AAPL, MSFT, NVDA, TSLA", label_visibility="collapsed")
 with col_btn:
     analyze_btn = st.button("🔍 Analyze", use_container_width=True, type="primary")
 
@@ -215,14 +215,45 @@ def get_stock_data_yfinance(ticker):
 
 
 def get_stock_data(ticker, fmp_api_key):
-    data = None
+    """Try FMP first, fall back to yfinance. Raises with detailed diagnostics on failure."""
+    fmp_error = None
+    yf_error  = None
+
+    # Try FMP
     if fmp_api_key:
-        data = get_stock_data_fmp(ticker, fmp_api_key)
-    if not data:
+        try:
+            data = get_stock_data_fmp(ticker, fmp_api_key)
+            if data:
+                return data
+            probe = fmp_get(f"profile/{ticker}", fmp_api_key)
+            if probe is None:
+                fmp_error = "FMP request failed (network error or invalid key)"
+            elif isinstance(probe, dict) and "Error Message" in probe:
+                fmp_error = f"FMP error: {probe['Error Message']}"
+            elif isinstance(probe, list) and len(probe) == 0:
+                fmp_error = f"FMP returned no data for ticker — may be invalid or not on free tier"
+            else:
+                fmp_error = f"FMP unexpected response: {str(probe)[:150]}"
+        except Exception as e:
+            fmp_error = f"FMP exception: {str(e)}"
+    else:
+        fmp_error = "FMP key not provided"
+
+    # Try yfinance
+    try:
         data = get_stock_data_yfinance(ticker)
-    if not data:
-        raise RuntimeError("Both FMP and Yahoo Finance failed. Please check the ticker symbol and try again.")
-    return data
+        if data:
+            return data
+        yf_error = "yfinance returned empty data after 3 attempts"
+    except Exception as e:
+        yf_error = f"yfinance exception: {str(e)}"
+
+    raise RuntimeError(
+        f"Could not load data for {ticker}.\n\n"
+        f"FMP result: {fmp_error}\n"
+        f"Yahoo Finance result: {yf_error}\n\n"
+        f"Check the ticker symbol is correct (e.g. TSLA, AAPL, MSFT)."
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -365,7 +396,11 @@ if analyze_btn and ticker_input:
         try:
             data = get_stock_data(ticker, fmp_key)
         except Exception as e:
-            st.error(str(e))
+            msg = str(e)
+            st.error("❌ Data fetch failed — see details below")
+            for line in msg.split("\n"):
+                if line.strip():
+                    st.markdown(line)
             st.stop()
 
     info          = data["info"]
