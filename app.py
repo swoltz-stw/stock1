@@ -110,21 +110,29 @@ def fmp_get(endpoint, api_key, params=None):
     p = params or {}
     p["apikey"] = api_key
     try:
-        r = requests.get(f"{FMP_BASE}/{endpoint}", params=p, timeout=10)
+        r = requests.get(f"{FMP_BASE}/{endpoint}", params=p, timeout=15)
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, dict) and "Error Message" in data:
+                # Store error for diagnostics but don't crash
+                fmp_get._last_error = data["Error Message"]
                 return None
             return data
-    except Exception:
-        pass
-    return None
+        else:
+            fmp_get._last_error = f"HTTP {r.status_code}: {r.text[:200]}"
+            return None
+    except Exception as e:
+        fmp_get._last_error = str(e)
+        return None
+
+fmp_get._last_error = None
 
 
 def get_stock_data_fmp(ticker, api_key):
     if not api_key:
         return None
 
+    # Use only endpoints available on FMP free tier
     profile      = fmp_get(f"profile/{ticker}", api_key)
     quote        = fmp_get(f"quote/{ticker}", api_key)
     income_a     = fmp_get(f"income-statement/{ticker}", api_key, {"limit": 4})
@@ -132,11 +140,17 @@ def get_stock_data_fmp(ticker, api_key):
     cashflow_a   = fmp_get(f"cash-flow-statement/{ticker}", api_key, {"limit": 2})
     balance_a    = fmp_get(f"balance-sheet-statement/{ticker}", api_key, {"limit": 2})
     ratios       = fmp_get(f"ratios-ttm/{ticker}", api_key)
-    price_target = fmp_get(f"price-target-consensus/{ticker}", api_key)
-    dividends    = fmp_get(f"stock_dividend_calendar", api_key, {"symbol": ticker, "from": datetime.now().strftime("%Y-%m-%d"), "to": (datetime.now() + timedelta(days=120)).strftime("%Y-%m-%d")})
-    earnings_cal = fmp_get(f"earning_calendar", api_key, {"symbol": ticker, "from": datetime.now().strftime("%Y-%m-%d"), "to": (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")})
+    key_metrics  = fmp_get(f"key-metrics-ttm/{ticker}", api_key)
+    # Note: price-target-consensus, earning_calendar, stock_dividend_calendar
+    # are not always available on free tier — fetch them but don't require them
+    price_target = fmp_get(f"price-target-consensus/{ticker}", api_key) or []
+    dividends    = fmp_get(f"stock_dividend_calendar", api_key, {"symbol": ticker, "from": datetime.now().strftime("%Y-%m-%d"), "to": (datetime.now() + timedelta(days=120)).strftime("%Y-%m-%d")}) or []
+    earnings_cal = fmp_get(f"earning_calendar", api_key, {"symbol": ticker, "from": datetime.now().strftime("%Y-%m-%d"), "to": (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")}) or []
 
+    # Only profile and quote are strictly required
     if not profile or not isinstance(profile, list) or len(profile) == 0:
+        return None
+    if not quote or not isinstance(quote, list) or len(quote) == 0:
         return None
 
     p  = profile[0]
@@ -233,12 +247,13 @@ def get_stock_data(ticker, fmp_api_key):
             if data:
                 return data
             probe = fmp_get(f"profile/{ticker}", fmp_api_key)
+            last_err = getattr(fmp_get, "_last_error", None)
             if probe is None:
-                fmp_error = "FMP request failed (network error or invalid key)"
+                fmp_error = f"FMP returned no data. Last error: {last_err or 'unknown'}"
             elif isinstance(probe, dict) and "Error Message" in probe:
                 fmp_error = f"FMP error: {probe['Error Message']}"
             elif isinstance(probe, list) and len(probe) == 0:
-                fmp_error = f"FMP returned no data for ticker — may be invalid or not on free tier"
+                fmp_error = f"FMP returned empty list for ticker. Last error: {last_err or 'none'}"
             else:
                 fmp_error = f"FMP unexpected response: {str(probe)[:150]}"
         except Exception as e:
