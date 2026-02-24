@@ -199,8 +199,14 @@ def get_stock_data_yfinance(ticker):
         try:
             stock = yf.Ticker(ticker)
             info  = stock.info
-            if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
-                raise ValueError("Empty response")
+            # yfinance returns a minimal dict with just quoteType on rate limit
+            meaningful = info and len(info) > 10 and (
+                info.get("regularMarketPrice") is not None or
+                info.get("currentPrice") is not None or
+                info.get("price") is not None
+            )
+            if not meaningful:
+                raise ValueError(f"yfinance returned insufficient data (keys: {len(info) if info else 0}), likely rate limited")
             return {
                 "info": info,
                 "quarterly_financials": stock.quarterly_financials,
@@ -208,10 +214,11 @@ def get_stock_data_yfinance(ticker):
                 "cashflow":             stock.cashflow,
                 "source": "Yahoo Finance",
             }
-        except Exception:
+        except Exception as e:
+            last_err = str(e)
             if attempt < 2:
-                time.sleep(2 + attempt * 2)
-    return None
+                time.sleep(3 + attempt * 3)
+    raise RuntimeError(f"yfinance failed after 3 attempts: {last_err}")
 
 
 def get_stock_data(ticker, fmp_api_key):
