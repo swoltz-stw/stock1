@@ -76,15 +76,8 @@ with col_btn:
 # DATA FETCHING — robust yfinance with browser-like headers + retry
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Rotate user agents to avoid Yahoo Finance rate limiting
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-]
-
 def get_stock_data(ticker: str) -> dict:
-    """Fetch stock data from Yahoo Finance with retry and rotating headers."""
+    """Fetch stock data from Yahoo Finance with retry. Let yfinance manage its own session."""
     last_error = "Unknown error"
     for attempt in range(4):
         try:
@@ -92,21 +85,14 @@ def get_stock_data(ticker: str) -> dict:
                 wait = 2 ** attempt + random.uniform(0, 2)
                 time.sleep(wait)
 
-            # Set a fresh session with browser-like headers each attempt
-            session = requests.Session()
-            session.headers.update({
-                "User-Agent": USER_AGENTS[attempt % len(USER_AGENTS)],
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-            })
-
-            stock = yf.Ticker(ticker, session=session)
+            # Do NOT pass a session — newer yfinance requires curl_cffi internally
+            stock = yf.Ticker(ticker)
             info  = stock.info
 
             # yfinance returns a minimal stub on rate limit — check we got real data
             price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("price")
             if not info or len(info) < 15 or price is None:
-                last_error = f"Attempt {attempt+1}: Yahoo returned incomplete data ({len(info) if info else 0} fields). Retrying..."
+                last_error = f"Attempt {attempt+1}: incomplete data ({len(info) if info else 0} fields)"
                 continue
 
             return {
