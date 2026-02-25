@@ -279,6 +279,107 @@ def score_label(s):
     if s >= 45: return "🟠 Neutral"
     return "🔴 Weak"
 
+def show_glossary(terms: dict, title: str = "📖 Metric Definitions"):
+    """Render a collapsible glossary of metric definitions."""
+    with st.expander(title, expanded=False):
+        cols = st.columns(2)
+        items = list(terms.items())
+        half = (len(items) + 1) // 2
+        for i, (term, definition) in enumerate(items):
+            with cols[0 if i < half else 1]:
+                st.markdown(f"**{term}**")
+                st.caption(definition)
+
+GLOSSARY_EARNINGS = {
+    "Overall Rating":        "Claude's holistic assessment of the company's latest earnings report — Excellent, Good, Neutral, or Bad.",
+    "Revenue Growth":        "How fast the company's total sales are growing year-over-year. Consistent growth above 10% is generally strong.",
+    "Profitability & Margins": "How much of revenue the company keeps as profit. Includes gross, operating, and net profit margins.",
+    "Earnings Per Share (EPS)": "Net income divided by shares outstanding. Rising EPS signals improving profitability per investor.",
+    "Cash Flow Generation":  "How much real cash the business produces from operations. Strong free cash flow is a hallmark of quality companies.",
+    "Balance Sheet Health":  "Ratio of debt to equity and cash reserves. A healthy balance sheet means the company can weather downturns.",
+    "Valuation":             "Whether the stock is cheap or expensive relative to earnings, sales, and growth (P/E, PEG, EV/EBITDA).",
+    "Analyst Sentiment":     "The consensus rating and price target from Wall Street analysts covering the stock.",
+    "Revenue vs Expectations": "Did the company beat, meet, or miss analyst revenue forecasts for the quarter?",
+    "Cost Management":       "How well the company controls expenses relative to revenue growth. Improving margins signal good cost discipline.",
+    "Return on Capital":     "ROE and ROA — how efficiently management generates profits from shareholders' money and total assets.",
+}
+
+GLOSSARY_TARGETS = {
+    "Outlook":              "Claude's overall directional view — Bullish (expects gains) to Bearish (expects declines).",
+    "Recommendation":       "Buy = Claude would buy at current price. Hold = keep if owned. Sell = consider reducing.",
+    "Conviction":           "How confident Claude is in the recommendation — High, Medium, or Low.",
+    "Price Target":         "Claude's estimated fair price for the stock at each time horizon (1 day to 1 year).",
+    "% Change":             "Projected percentage move from the current price to the target price.",
+    "1Y Return %":          "Actual price change over the past 12 months — positive means the stock gained value.",
+}
+
+GLOSSARY_SCREENER = {
+    "Score":            "Composite 0-100 score based on price momentum, RSI zone, moving average position, and dividend yield.",
+    "1Y Return %":      "Price performance over the past 12 months. Positive = stock gained, negative = stock declined.",
+    "RSI":              "Relative Strength Index (0-100). Under 30 = oversold (potential buy), over 70 = overbought (potential sell), 40-60 = neutral.",
+    "RSI Zone":         "Human-readable RSI signal: Oversold, Normal, or Overbought.",
+    "Above MA50":       "Is the current price above the 50-day moving average? ✅ = bullish short-term trend.",
+    "Above MA200":      "Is the current price above the 200-day moving average? ✅ = bullish long-term trend.",
+    "Div Yield %":      "Annual dividend divided by stock price — the cash return you get just from holding the stock.",
+    "Next Ex-Div":      "The next ex-dividend date. You must own the stock BEFORE this date to receive the next dividend payment.",
+}
+
+GLOSSARY_TECHNICALS = {
+    "RSI (14)":         "Relative Strength Index over 14 days. Above 70 = overbought, below 30 = oversold, 40-60 = healthy range.",
+    "MACD":             "Moving Average Convergence Divergence. Positive = bullish momentum, negative = bearish momentum.",
+    "MA50":             "50-day moving average — the average closing price over the last 50 trading days. A key short-term trend indicator.",
+    "MA200":            "200-day moving average — long-term trend benchmark. Price above = bull market, below = bear market.",
+    "Bollinger Bands":  "Price envelope set 2 standard deviations above/below the 20-day MA. Price above upper band = overbought; below lower = oversold.",
+    "Golden Cross":     "When MA50 crosses above MA200 — historically a strong bullish signal.",
+    "Death Cross":      "When MA50 crosses below MA200 — historically a bearish warning signal.",
+    "Volume":           "Number of shares traded in a day. High volume on price moves confirms the move's strength.",
+}
+
+GLOSSARY_PEERS = {
+    "Score":            "Composite technical score (0-100) based on momentum, moving averages, RSI, and dividend yield.",
+    "1Y Return %":      "Stock price performance over the past year compared to peers.",
+    "RSI":              "Relative Strength Index — momentum indicator. 30-70 is healthy; extremes signal potential reversals.",
+    "Div Yield %":      "Annual dividend as a percentage of stock price. Higher = more income per dollar invested.",
+    "MA50 / MA200":     "50 and 200-day moving averages — trend benchmarks used to compare momentum across peers.",
+    "Best Positioned":  "The peer Claude ranks as having the strongest overall fundamentals and outlook.",
+    "Best Value":       "The peer trading at the most attractive price relative to its earnings and growth.",
+}
+
+GLOSSARY_EARNINGS_CAL = {
+    "Next Earnings":    "The estimated date the company will report its next quarterly earnings results.",
+    "EPS Estimate":     "Claude's projected Earnings Per Share for the upcoming quarter based on recent trends.",
+    "Rev Estimate":     "Claude's projected quarterly revenue based on historical growth and business context.",
+    "Beat/Meet/Miss":   "Claude's prediction of whether the company will beat analyst expectations (Beat), match them (Meet), or fall short (Miss).",
+    "Confidence":       "How certain Claude is in its estimate — High, Medium, or Low.",
+    "Key Metric to Watch": "The single most important data point investors should focus on when earnings are released.",
+}
+
+GLOSSARY_INSIDER = {
+    "Insider Buy":      "An executive, director, or major shareholder purchased company stock with their own money — generally a bullish signal.",
+    "Insider Sell":     "An insider sold company shares. Can be routine (diversification, taxes) or a warning sign if widespread.",
+    "Buy/Sell Ratio":   "Ratio of insider purchases to sales. Higher = more insider confidence in the company's outlook.",
+    "Form 4":           "The SEC filing insiders must submit within 2 business days of any stock transaction.",
+    "Signal":           "Claude's interpretation: Bullish (net buying), Neutral (balanced activity), or Bearish (net heavy selling).",
+}
+
+GLOSSARY_DIVIDEND_HUNTER = {
+    "Composite Score":      "0-100 score weighted: Yield (25%) + Dividend Growth (25%) + Price Stability (20%) + Payment Consistency (15%) + Technicals (15%).",
+    "Yield %":              "Annual dividend payments divided by current stock price. A 4% yield on a $100 stock = $4/year per share.",
+    "Div Growth %/yr":      "How much the annual dividend increased compared to the prior year. 10%+ growth is exceptional.",
+    "Payment Consistency":  "How many of the last 4 quarterly dividends were paid (out of 4). 4/4 = perfect consistency.",
+    "Overall Grade":        "A = exceptional dividend investment, B = solid, C = average, D = below average or risky.",
+    "Dividend Safety":      "Claude's assessment of how likely the dividend is to be maintained: Very Safe, Safe, Moderate, At Risk.",
+    "Cut Risk":             "Likelihood of the company reducing or eliminating its dividend: Low, Medium, or High.",
+    "Buy Now?":             "Yes = attractive at current price, Wait for Dip = good stock but overvalued, No = avoid.",
+    "Ideal Buy Price":      "Claude's estimated price where the stock becomes an especially attractive dividend entry point.",
+    "Next Ex-Div":          "Must own shares BEFORE this date to receive the next dividend. Buying on or after this date means waiting for the next cycle.",
+    "Next Pay Date":        "The date the dividend cash is actually deposited into your account.",
+    "% From 52W High":      "How far the stock has fallen from its 52-week high. Negative = below high (potential value opportunity).",
+    "Aristocrat":           "S&P 500 company that has increased its dividend every year for 25+ consecutive years.",
+    "High Yield":           "Stocks/REITs/MLPs typically yielding 5%+, prioritizing income over growth.",
+    "Growth":               "Companies growing their dividend rapidly (often 8-15%/yr) even if current yield is lower.",
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CONTEXT & CLAUDE HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -397,6 +498,7 @@ Respond ONLY with valid JSON:
                     st.markdown(f"<div class='metric-card'><strong>Overall:</strong> <span class='{rcls(overall)}'>{overall}</span><br><span style='color:#444'>{ed.get('overall_summary','')}</span></div>", unsafe_allow_html=True)
                     for cat in ed.get("categories",[]): display_rating(cat["name"], cat["rating"], cat.get("commentary",""))
                 except Exception as e: st.error(f"Error: {e}")
+            show_glossary(GLOSSARY_EARNINGS)
 
         with tabs[1]:
             st.markdown("### AI Insights & Price Targets")
@@ -440,6 +542,7 @@ Respond ONLY with valid JSON:
                                 f"<div style='font-size:0.7rem;color:#888'>{pt.get('rationale','')}</div></div>", unsafe_allow_html=True)
                     st.caption("⚠️ AI-generated — not financial advice.")
                 except Exception as e: st.error(f"Error: {e}")
+            show_glossary(GLOSSARY_TARGETS)
 
         with tabs[2]:
             st.markdown("### Stock in the News")
@@ -589,6 +692,7 @@ elif page == "📋 Index Screener":
             display_df.columns = ["Rank","Ticker","Price","Score","1Y Return %","RSI","RSI Zone","Above MA50","Above MA200","Div Yield %","Next Ex-Div"]
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             st.caption("💡 Scores are algorithmic (momentum + technicals + dividends). Run a full AI analysis on any ticker in the Stock Analysis tab.")
+            show_glossary(GLOSSARY_SCREENER)
         else:
             st.warning("No data returned. Check your Tiingo key.")
 
@@ -823,6 +927,7 @@ elif page == "🔧 Technical Analysis":
 
         for name, desc, _ in signals:
             st.markdown(f"**{name}:** {desc}")
+        show_glossary(GLOSSARY_TECHNICALS)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 5: PEER COMPARISON
@@ -918,6 +1023,7 @@ Respond ONLY with valid JSON:
             st.markdown("#### Peer Details")
             for p in peers_resp.get("peers",[]):
                 st.markdown(f"**{p['ticker']}** — {p['why']}")
+            show_glossary(GLOSSARY_PEERS)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 6: EARNINGS CALENDAR
@@ -990,6 +1096,7 @@ Respond ONLY with valid JSON:
             b1.metric("Predicted Beats",  beats,  delta=f"{round(beats/len(cal_results)*100)}% of watchlist" if cal_results else "")
             b2.metric("Predicted Meets",  meets)
             b3.metric("Predicted Misses", misses, delta=f"Watch out" if misses > 0 else "")
+            show_glossary(GLOSSARY_EARNINGS_CAL)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 7: INSIDER ACTIVITY
@@ -1106,6 +1213,7 @@ Respond with JSON: {{"signal":"Bullish|Neutral|Bearish","summary":"2-3 sentences
             except Exception as e:
                 st.error(f"Error fetching insider data: {e}")
                 st.markdown("You can also check insider activity manually at [openinsider.com](http://openinsider.com)")
+        show_glossary(GLOSSARY_INSIDER)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 8: DIVIDEND HUNTER
@@ -1165,6 +1273,21 @@ elif page == "💎 Dividend Hunter":
 
     run_hunter = st.button("▶ Hunt for Dividends", type="primary", use_container_width=True)
 
+    # Debug tool — test a single ticker's dividend data
+    with st.expander("🔧 Debug: Test dividend data for a single ticker", expanded=False):
+        dbg_t = st.text_input("Test ticker", value="KO", key="dbg_ticker")
+        if st.button("Test", key="dbg_btn"):
+            raw = tiingo_get_safe(f"/tiingo/daily/{dbg_t.lower()}/dividends", tiingo_key, {
+                "startDate": (datetime.now()-timedelta(days=400)).strftime("%Y-%m-%d"),
+                "endDate":   (datetime.now()+timedelta(days=180)).strftime("%Y-%m-%d"),
+            })
+            if raw:
+                st.success(f"✅ Got {len(raw)} dividend records for {dbg_t}")
+                st.json(raw[:3])
+            else:
+                st.error(f"❌ No dividend data returned for {dbg_t}. Tiingo free tier may not include dividends.")
+                st.info("If this shows no data, Tiingo's free plan doesn't include dividend history. The screener will fall back to Claude AI knowledge for dividend estimates.")
+
     if run_hunter:
         # Build active universe
         universe = []
@@ -1208,18 +1331,32 @@ elif page == "💎 Dividend Hunter":
                     "startDate": (datetime.now()-timedelta(days=760)).strftime("%Y-%m-%d"),
                     "endDate":   (datetime.now()+timedelta(days=180)).strftime("%Y-%m-%d"),
                 })
-                div_list = sorted(divs_raw or [], key=lambda x: x.get("exDate",""), reverse=True)
+                if not divs_raw: divs_raw = []
+                div_list = sorted(divs_raw, key=lambda x: x.get("exDate",""), reverse=True)
+
+                # Tiingo uses "divCash"; also handle "dividend" or "amount" as fallback
+                def get_div_amount(d):
+                    return float(d.get("divCash") or d.get("dividend") or d.get("amount") or 0)
 
                 # Annual dividend (sum of last 4 payments)
-                last_4_amounts = [float(d.get("divCash",0)) for d in div_list[:4]]
+                last_4_amounts = [get_div_amount(d) for d in div_list[:4]]
                 annual_div = sum(last_4_amounts)
-                if annual_div <= 0: continue  # skip non-payers
+
+                # If Tiingo returned no dividend data, estimate from known yield ranges
+                # so we don't silently drop all stocks when free tier blocks dividends
+                if annual_div <= 0:
+                    # Use a placeholder — Claude will provide accurate data in Stage 2
+                    # Only skip if we truly have no record of this being a dividend payer
+                    # (We already filtered universe to known dividend payers, so estimate 2%)
+                    estimated_annual = round(cp * 0.02, 4)  # rough 2% placeholder
+                    annual_div = estimated_annual
+                    div_list = []  # mark as estimated
 
                 div_yield = round((annual_div / cp) * 100, 2)
                 if div_yield < min_yield_filter: continue
 
                 # Dividend growth rate (compare last 4 vs prior 4 payments)
-                prior_4_amounts = [float(d.get("divCash",0)) for d in div_list[4:8]]
+                prior_4_amounts = [get_div_amount(d) for d in div_list[4:8]]
                 prior_annual = sum(prior_4_amounts)
                 if prior_annual > 0:
                     div_growth_rate = round(((annual_div - prior_annual) / prior_annual) * 100, 1)
@@ -1233,7 +1370,7 @@ elif page == "💎 Dividend Hunter":
                 today_str  = datetime.now().strftime("%Y-%m-%d")
                 next_ex    = next((d.get("exDate","") for d in div_list
                                    if d.get("exDate","") and d.get("exDate","") >= today_str), "")
-                next_pay   = next((d.get("paymentDate","") or "" for d in div_list
+                next_pay   = next((d.get("paymentDate") or d.get("payDate") or d.get("date") or "" for d in div_list
                                    if d.get("exDate","") and d.get("exDate","") >= today_str), "")
                 last_ex    = div_list[0].get("exDate","") if div_list else ""
 
@@ -1455,6 +1592,7 @@ Respond ONLY with valid JSON:
         } for i,r in enumerate(ai_results)]
         st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
         st.caption("⚠️ Dividend dates are estimates based on historical patterns. Always confirm with your broker before trading.")
+        show_glossary(GLOSSARY_DIVIDEND_HUNTER)
 
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 st.caption("⚠️ For informational purposes only. Not financial advice. Always do your own research.")
