@@ -341,7 +341,7 @@ def display_rating(label, rating, commentary=""):
 # NAVIGATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-page = st.radio("", ["🔍 Stock Analysis", "📋 Index Screener", "📈 Backtester", "🔧 Technical Analysis", "🏢 Peer Comparison", "📅 Earnings Calendar", "🕵️ Insider Activity"],
+page = st.radio("", ["🔍 Stock Analysis", "📋 Index Screener", "📈 Backtester", "🔧 Technical Analysis", "🏢 Peer Comparison", "📅 Earnings Calendar", "🕵️ Insider Activity", "💎 Dividend Hunter"],
     horizontal=True, label_visibility="collapsed")
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -1106,6 +1106,355 @@ Respond with JSON: {{"signal":"Bullish|Neutral|Bearish","summary":"2-3 sentences
             except Exception as e:
                 st.error(f"Error fetching insider data: {e}")
                 st.markdown("You can also check insider activity manually at [openinsider.com](http://openinsider.com)")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 8: DIVIDEND HUNTER
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "💎 Dividend Hunter":
+    import pandas as pd
+
+    st.markdown("### 💎 Dividend Hunter")
+    st.markdown("Find the best dividend stocks across Aristocrats, High Yield, and Dividend Growth categories. "
+                "Algorithmically scores 150+ stocks, then runs AI deep-dive on the top 10.")
+
+    if not tiingo_key or not anthropic_key:
+        st.error("Both Tiingo and Anthropic API keys required."); st.stop()
+
+    # ── Dividend Universe ─────────────────────────────────────────────────────
+    ARISTOCRATS = [
+        "MMM","ABT","ABBV","AFL","APD","ADM","ADP","LOW","ATO","AVY",
+        "BDX","BRO","CHRW","CVX","CB","CL","CINF","KO","ED","CBSH",
+        "DOV","EMR","XOM","FRT","BEN","GPC","GWW","HRL","ITW","JKHY",
+        "JNJ","KMB","LEG","LIN","MCD","MDT","MKC","NDSN","NKTR","NUE",
+        "PH","PBCT","PEP","PNR","PG","O","ROP","ROST","SWK","SYY",
+        "TROW","TGT","AWR","UHT","VFC","WMT","WBA","SPGI","AOS","CWT",
+    ]
+
+    HIGH_YIELD = [
+        # REITs
+        "O","MAIN","STAG","VICI","AMT","PLD","SPG","ARE","EXR","PSA",
+        "WELL","VTR","NNN","STOR","WPC","EPR","LTC","OHI","SBRA","SNH",
+        # Utilities
+        "NEE","DUK","SO","D","AEP","EXC","SRE","PCG","XEL","WEC",
+        "ETR","ES","PPL","CMS","NI","PNW","WTRG","AWK","SJW","MSEX",
+        # MLPs / Energy
+        "ET","MMP","EPD","PAA","WES","MPLX","DCP","HEP","CAPL","SHLX",
+        # BDCs
+        "MAIN","ARCC","PSEC","GBDC","GAIN","HTGC","SLRC","TPVG","KCAP","TCPC",
+    ]
+
+    DIVIDEND_GROWTH = [
+        "MSFT","AAPL","V","MA","UNH","HD","JPM","BAC","AVGO","TXN",
+        "QCOM","IBM","INTC","CSCO","ACN","TJX","COST","TMO","DHR","SYK",
+        "BLK","CB","ICE","AON","MMC","AJG","TRV","CINF","ALL","PGR",
+        "AMGN","GILD","BIIB","ABT","BDX","BAX","EW","ISRG","IDXX","MTD",
+        "HON","GE","CAT","DE","EMR","ROK","PH","ITW","ETN","AME",
+        "FAST","GWW","ODFL","CTAS","PAYX","ADP","RCL","HLT","MAR","WM",
+    ]
+
+    # Deduplicate while preserving category labels
+    all_div_tickers = list(dict.fromkeys(ARISTOCRATS + HIGH_YIELD + DIVIDEND_GROWTH))
+
+    # ── Category filter ───────────────────────────────────────────────────────
+    st.markdown("#### Filters")
+    fc1, fc2, fc3, fc4 = st.columns(4)
+    with fc1: inc_aristocrats  = st.checkbox("Dividend Aristocrats", value=True)
+    with fc2: inc_high_yield   = st.checkbox("High Yield (5%+)", value=True)
+    with fc3: inc_div_growth   = st.checkbox("Dividend Growth", value=True)
+    with fc4: min_yield_filter = st.slider("Min Yield %", 0.0, 10.0, 1.0, 0.5)
+
+    run_hunter = st.button("▶ Hunt for Dividends", type="primary", use_container_width=True)
+
+    if run_hunter:
+        # Build active universe
+        universe = []
+        if inc_aristocrats: universe += ARISTOCRATS
+        if inc_high_yield:  universe += HIGH_YIELD
+        if inc_div_growth:  universe += DIVIDEND_GROWTH
+        universe = list(dict.fromkeys(universe))  # deduplicate
+
+        # ── Stage 1: Algorithmic Scoring ──────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Stage 1 — Scanning Universe…")
+        prog = st.progress(0, text="Fetching dividend data…")
+        scored = []
+
+        for i, t in enumerate(universe):
+            prog.progress((i+1)/len(universe), text=f"Scanning {t} ({i+1}/{len(universe)})…")
+            try:
+                # Price history (1 year)
+                prices = tiingo_get_safe(f"/tiingo/daily/{t.lower()}/prices", tiingo_key, {
+                    "startDate": (datetime.now()-timedelta(days=400)).strftime("%Y-%m-%d"),
+                    "endDate":   datetime.now().strftime("%Y-%m-%d"),
+                })
+                if not prices or len(prices) < 5: continue
+                latest   = prices[-1]
+                yr_ago   = prices[0]
+                cp       = float(latest.get("adjClose") or latest.get("close") or 0)
+                yr_ago_p = float(yr_ago.get("adjClose")  or yr_ago.get("close")  or cp)
+                if cp <= 0: continue
+
+                closes   = [float(p.get("adjClose") or p.get("close") or 0) for p in prices]
+                ma50     = calc_ma(closes, 50)
+                ma200    = calc_ma(closes, 200)
+                rsi      = calc_rsi(closes[-15:])
+                perf_1yr = round(((cp - yr_ago_p) / yr_ago_p) * 100, 1) if yr_ago_p else 0
+                high_52w = max(closes)
+                low_52w  = min(closes)
+                pct_from_high = round(((cp - high_52w) / high_52w) * 100, 1) if high_52w else 0
+
+                # Dividend history (2 years for growth calc)
+                divs_raw = tiingo_get_safe(f"/tiingo/daily/{t.lower()}/dividends", tiingo_key, {
+                    "startDate": (datetime.now()-timedelta(days=760)).strftime("%Y-%m-%d"),
+                    "endDate":   (datetime.now()+timedelta(days=180)).strftime("%Y-%m-%d"),
+                })
+                div_list = sorted(divs_raw or [], key=lambda x: x.get("exDate",""), reverse=True)
+
+                # Annual dividend (sum of last 4 payments)
+                last_4_amounts = [float(d.get("divCash",0)) for d in div_list[:4]]
+                annual_div = sum(last_4_amounts)
+                if annual_div <= 0: continue  # skip non-payers
+
+                div_yield = round((annual_div / cp) * 100, 2)
+                if div_yield < min_yield_filter: continue
+
+                # Dividend growth rate (compare last 4 vs prior 4 payments)
+                prior_4_amounts = [float(d.get("divCash",0)) for d in div_list[4:8]]
+                prior_annual = sum(prior_4_amounts)
+                if prior_annual > 0:
+                    div_growth_rate = round(((annual_div - prior_annual) / prior_annual) * 100, 1)
+                else:
+                    div_growth_rate = 0
+
+                # Payment consistency (did they pay all 4 quarters?)
+                consistency = len([a for a in last_4_amounts if a > 0])  # 0-4
+
+                # Next ex-dividend date
+                today_str  = datetime.now().strftime("%Y-%m-%d")
+                next_ex    = next((d.get("exDate","") for d in div_list
+                                   if d.get("exDate","") and d.get("exDate","") >= today_str), "")
+                next_pay   = next((d.get("paymentDate","") or "" for d in div_list
+                                   if d.get("exDate","") and d.get("exDate","") >= today_str), "")
+                last_ex    = div_list[0].get("exDate","") if div_list else ""
+
+                # Category tags
+                cats = []
+                if t in ARISTOCRATS: cats.append("Aristocrat")
+                if t in HIGH_YIELD:  cats.append("High Yield")
+                if t in DIVIDEND_GROWTH: cats.append("Growth")
+
+                # ── Composite Dividend Score ──────────────────────────────────
+                # Weights: yield(25) + growth(25) + price stability(20) + consistency(15) + momentum(15)
+                score = 0
+                # Yield component (25 pts)
+                if   div_yield >= 7:   score += 25
+                elif div_yield >= 5:   score += 20
+                elif div_yield >= 3:   score += 14
+                elif div_yield >= 1.5: score += 8
+                else:                  score += 3
+                # Dividend growth (25 pts)
+                if   div_growth_rate >= 10: score += 25
+                elif div_growth_rate >= 5:  score += 20
+                elif div_growth_rate >= 2:  score += 14
+                elif div_growth_rate >= 0:  score += 8
+                else:                       score += 0  # dividend cut
+                # Price stability (20 pts) — penalize big drawdowns
+                if   perf_1yr >= 10:   score += 20
+                elif perf_1yr >= 0:    score += 15
+                elif perf_1yr >= -10:  score += 8
+                elif perf_1yr >= -20:  score += 3
+                else:                  score += 0
+                # Consistency (15 pts)
+                score += consistency * 3  # 3 pts per quarter paid
+                # Technicals (15 pts)
+                if ma50  and cp > ma50:  score += 7
+                if ma200 and cp > ma200: score += 8
+
+                scored.append({
+                    "ticker":         t,
+                    "price":          round(cp, 2),
+                    "div_yield":      div_yield,
+                    "annual_div":     round(annual_div, 4),
+                    "div_growth_rate": div_growth_rate,
+                    "perf_1yr":       perf_1yr,
+                    "consistency":    consistency,
+                    "next_ex_div":    next_ex[:10] if next_ex else "TBD",
+                    "next_pay_date":  next_pay[:10] if next_pay else "TBD",
+                    "last_ex_div":    last_ex[:10] if last_ex else "",
+                    "high_52w":       round(high_52w, 2),
+                    "low_52w":        round(low_52w, 2),
+                    "pct_from_high":  pct_from_high,
+                    "ma50":           round(ma50, 2) if ma50 else None,
+                    "ma200":          round(ma200, 2) if ma200 else None,
+                    "rsi":            round(rsi, 1) if rsi else None,
+                    "categories":     ", ".join(cats),
+                    "score":          min(score, 100),
+                })
+            except: continue
+            time.sleep(0.25)
+
+        prog.empty()
+
+        if not scored:
+            st.warning("No dividend stocks found matching your filters."); st.stop()
+
+        # Sort by composite score
+        scored_sorted = sorted(scored, key=lambda x: x["score"], reverse=True)
+        top_all  = scored_sorted[:50]   # show top 50 in table
+        top_10   = scored_sorted[:10]   # AI deep dive on top 10
+
+        # ── Summary Stats ─────────────────────────────────────────────────────
+        st.markdown(f"#### ✅ Scanned {len(scored)} dividend-paying stocks")
+        ss1, ss2, ss3, ss4 = st.columns(4)
+        ss1.metric("Avg Yield (top 50)",   f"{round(sum(r['div_yield'] for r in top_all)/len(top_all),2)}%")
+        ss2.metric("Avg Div Growth",        f"{round(sum(r['div_growth_rate'] for r in top_all)/len(top_all),1)}%/yr")
+        ss3.metric("Avg 1Y Price Return",   f"{round(sum(r['perf_1yr'] for r in top_all)/len(top_all),1)}%")
+        ss4.metric("Avg Composite Score",   round(sum(r['score'] for r in top_all)/len(top_all),1))
+
+        # ── Full Sortable Table ───────────────────────────────────────────────
+        st.markdown("#### 📊 Top 50 Dividend Stocks — Full Ranking")
+        df_div = pd.DataFrame(top_all)
+        df_display = df_div[[
+            "ticker","categories","price","score","div_yield","annual_div",
+            "div_growth_rate","perf_1yr","rsi","next_ex_div","next_pay_date","pct_from_high"
+        ]].copy()
+        df_display.columns = [
+            "Ticker","Category","Price","Score","Yield %","Annual Div $",
+            "Div Growth %/yr","1Y Return %","RSI","Next Ex-Div","Next Pay Date","% From 52W High"
+        ]
+        df_display.insert(0, "Rank", range(1, len(df_display)+1))
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+        # ── Stage 2: AI Deep Dive on Top 10 ──────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### 🤖 Stage 2 — AI Deep Dive: Top 10 Dividend Stocks")
+        st.caption("Claude analyzes each top stock for dividend sustainability, price outlook, and risk of a cut.")
+
+        client = anthropic.Anthropic(api_key=anthropic_key)
+        ai_results = []
+        ai_prog = st.progress(0, text="Running AI analysis…")
+
+        for i, stock in enumerate(top_10):
+            ai_prog.progress((i+1)/10, text=f"Analyzing {stock['ticker']} ({i+1}/10)…")
+            try:
+                ai_resp = parse_json(ask_claude(client,
+                    "You are a dividend investing expert. Return only valid JSON, no markdown.",
+                    f"""Analyze {stock['ticker']} as a dividend investment.
+
+Key data:
+- Current Price: ${stock['price']}
+- Dividend Yield: {stock['div_yield']}%
+- Annual Dividend: ${stock['annual_div']}
+- Dividend Growth Rate (YoY): {stock['div_growth_rate']}%
+- 1-Year Price Return: {stock['perf_1yr']}%
+- Payment Consistency (quarters paid of last 4): {stock['consistency']}/4
+- % From 52-Week High: {stock['pct_from_high']}%
+- RSI: {stock['rsi']}
+- Categories: {stock['categories']}
+
+Use your knowledge of this company's financials, payout ratio, free cash flow, and business outlook.
+
+Respond ONLY with valid JSON:
+{{
+  "company_name": "Full company name",
+  "sector": "sector",
+  "dividend_safety": "Very Safe|Safe|Moderate|At Risk",
+  "dividend_safety_rationale": "2 sentences on payout ratio and cash flow coverage",
+  "price_outlook": "Bullish|Neutral|Bearish",
+  "price_outlook_rationale": "2 sentences",
+  "cut_risk": "Low|Medium|High",
+  "cut_risk_reason": "one sentence",
+  "best_feature": "the single most compelling reason to own this for dividends",
+  "main_risk": "the single biggest risk",
+  "overall_grade": "A|B|C|D",
+  "buy_now": "Yes|Wait for Dip|No",
+  "ideal_buy_price": 0.0
+}}"""
+                ))
+                ai_results.append({**stock, **ai_resp})
+            except Exception as e:
+                ai_results.append({**stock, "company_name": stock["ticker"], "dividend_safety": "N/A",
+                    "price_outlook": "N/A", "cut_risk": "N/A", "overall_grade": "N/A",
+                    "buy_now": "N/A", "best_feature": str(e)[:80], "main_risk": "", "ideal_buy_price": 0})
+            time.sleep(0.3)
+
+        ai_prog.empty()
+
+        # ── Top 10 AI Results Table ───────────────────────────────────────────
+        st.markdown("#### 🏆 Top 10 — AI Scored & Ranked")
+        for rank, r in enumerate(ai_results, 1):
+            grade = r.get("overall_grade","N/A")
+            grade_color = {"A":"#2e7d32","B":"#1a73e8","C":"#f57c00","D":"#c62828"}.get(grade,"#666")
+            safety = r.get("dividend_safety","N/A")
+            safety_color = {"Very Safe":"#2e7d32","Safe":"#2e7d32","Moderate":"#f57c00","At Risk":"#c62828"}.get(safety,"#666")
+            outlook = r.get("price_outlook","N/A")
+            outlook_color = {"Bullish":"#2e7d32","Neutral":"#f57c00","Bearish":"#c62828"}.get(outlook,"#666")
+            buy = r.get("buy_now","N/A")
+            buy_color = {"Yes":"#2e7d32","Wait for Dip":"#f57c00","No":"#c62828"}.get(buy,"#666")
+
+            with st.expander(
+                f"#{rank} — {r['ticker']} · {r.get('company_name', r['ticker'])} · "
+                f"Yield: {r['div_yield']}% · Score: {r['score']} · Grade: {grade}",
+                expanded=(rank <= 3)
+            ):
+                col_a, col_b, col_c, col_d = st.columns(4)
+                col_a.markdown(f"**Overall Grade**<br><span style='font-size:2rem;font-weight:800;color:{grade_color}'>{grade}</span>", unsafe_allow_html=True)
+                col_b.markdown(f"**Div Safety**<br><span style='color:{safety_color};font-weight:700'>{safety}</span>", unsafe_allow_html=True)
+                col_c.markdown(f"**Price Outlook**<br><span style='color:{outlook_color};font-weight:700'>{outlook}</span>", unsafe_allow_html=True)
+                col_d.markdown(f"**Buy Now?**<br><span style='color:{buy_color};font-weight:700'>{buy}</span>", unsafe_allow_html=True)
+
+                m1, m2, m3, m4, m5, m6 = st.columns(6)
+                m1.metric("Price",         f"${r['price']}")
+                m2.metric("Yield",         f"{r['div_yield']}%")
+                m3.metric("Annual Div",    f"${r['annual_div']}")
+                m4.metric("Div Growth",    f"{r['div_growth_rate']}%/yr")
+                m5.metric("Next Ex-Div",   r['next_ex_div'])
+                m6.metric("Next Pay Date", r['next_pay_date'])
+
+                d1, d2 = st.columns(2)
+                with d1:
+                    st.markdown(f"**✅ Best Feature:** {r.get('best_feature','')}")
+                    st.markdown(f"**💰 Div Safety:** {r.get('dividend_safety_rationale','')}")
+                    ideal = r.get('ideal_buy_price', 0)
+                    if ideal and float(ideal) > 0:
+                        diff = round(((float(ideal) - float(r['price'])) / float(r['price'])) * 100, 1)
+                        st.markdown(f"**🎯 Ideal Buy Price:** ${ideal} ({diff:+.1f}% from current)")
+                with d2:
+                    st.markdown(f"**⚠️ Main Risk:** {r.get('main_risk','')}")
+                    st.markdown(f"**📈 Price Outlook:** {r.get('price_outlook_rationale','')}")
+                    cut_risk_val = r.get("cut_risk","N/A")
+                    cut_color = "#c62828" if cut_risk_val=="High" else "#f57c00" if cut_risk_val=="Medium" else "#2e7d32"
+                    st.markdown(f"**✂️ Cut Risk:** <span style='color:{cut_color}'>{cut_risk_val}</span> — {r.get('cut_risk_reason','')}", unsafe_allow_html=True)
+
+                # Mini dividend date card
+                st.markdown(
+                    f"<div style='background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px;margin-top:8px'>"
+                    f"📅 <strong>Next Ex-Dividend:</strong> {r['next_ex_div']} &nbsp;|&nbsp; "
+                    f"💵 <strong>Next Payment:</strong> {r['next_pay_date']} &nbsp;|&nbsp; "
+                    f"📊 <strong>Category:</strong> {r['categories']} &nbsp;|&nbsp; "
+                    f"📉 <strong>From 52W High:</strong> {r['pct_from_high']}%"
+                    f"</div>", unsafe_allow_html=True)
+
+        # ── Final Summary Table ───────────────────────────────────────────────
+        st.markdown("#### 📋 Top 10 Quick Reference Table")
+        summary_rows = [{
+            "Rank":         i+1,
+            "Ticker":       r["ticker"],
+            "Company":      r.get("company_name", r["ticker"]),
+            "Grade":        r.get("overall_grade","N/A"),
+            "Yield %":      r["div_yield"],
+            "Div Growth %": r["div_growth_rate"],
+            "Safety":       r.get("dividend_safety","N/A"),
+            "Price Outlook":r.get("price_outlook","N/A"),
+            "Cut Risk":     r.get("cut_risk","N/A"),
+            "Buy Now?":     r.get("buy_now","N/A"),
+            "Next Ex-Div":  r["next_ex_div"],
+            "Next Pay Date":r["next_pay_date"],
+            "Ideal Buy $":  r.get("ideal_buy_price","N/A"),
+            "Score":        r["score"],
+        } for i,r in enumerate(ai_results)]
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+        st.caption("⚠️ Dividend dates are estimates based on historical patterns. Always confirm with your broker before trading.")
 
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 st.caption("⚠️ For informational purposes only. Not financial advice. Always do your own research.")
