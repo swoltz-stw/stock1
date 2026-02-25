@@ -74,6 +74,8 @@ def tiingo_get(path: str, api_key: str, params: dict = None) -> dict | list | No
         r = requests.get(f"{TIINGO_BASE}{path}", headers=headers, params=p, timeout=15)
         if r.status_code == 401:
             raise RuntimeError("Tiingo API key is invalid. Please check your key at api.tiingo.com → Account → API.")
+        if r.status_code == 403:
+            raise RuntimeError(f"Tiingo returned HTTP 403: {r.text[:200]}")
         if r.status_code == 404:
             return None  # ticker not found
         if r.status_code == 429:
@@ -106,24 +108,36 @@ def get_stock_data(ticker: str, api_key: str) -> dict:
     })
     latest_price = prices[-1] if prices else {}
 
-    # 3. Fundamentals — overview (P/E, market cap, EPS, margins etc.)
-    fundamentals = tiingo_get(f"/tiingo/fundamentals/{ticker_lower}/statements", api_key, {
-        "startDate": (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d"),
-        "filter":    "quarterlyIncomeStatement,annualIncomeStatement,quarterlyBalanceSheet,annualCashFlow",
-    })
+    # 3. Fundamentals — try, but gracefully skip if not on plan
+    fundamentals = None
+    try:
+        fundamentals = tiingo_get(f"/tiingo/fundamentals/{ticker_lower}/statements", api_key, {
+            "startDate": (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d"),
+            "filter":    "quarterlyIncomeStatement,annualIncomeStatement,quarterlyBalanceSheet,annualCashFlow",
+        })
+    except Exception:
+        pass
 
-    # 4. Fundamentals meta (shares outstanding, market cap etc.)
-    fund_meta = tiingo_get(f"/tiingo/fundamentals/{ticker_lower}/daily", api_key, {
-        "startDate": (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d"),
-    })
-    fund_latest = fund_meta[-1] if fund_meta else {}
+    # 4. Fundamentals meta — try, gracefully skip if not on plan
+    fund_latest = {}
+    try:
+        fund_meta = tiingo_get(f"/tiingo/fundamentals/{ticker_lower}/daily", api_key, {
+            "startDate": (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d"),
+        })
+        fund_latest = fund_meta[-1] if fund_meta else {}
+    except Exception:
+        pass
 
-    # 5. News from Tiingo
-    news = tiingo_get("/tiingo/news", api_key, {
-        "tickers": ticker_lower,
-        "limit":   10,
-        "sortBy":  "publishedDate",
-    })
+    # 5. News from Tiingo — try, gracefully skip if not on plan
+    news = []
+    try:
+        news = tiingo_get("/tiingo/news", api_key, {
+            "tickers": ticker_lower,
+            "limit":   10,
+            "sortBy":  "publishedDate",
+        }) or []
+    except Exception:
+        pass
 
     current_price = latest_price.get("adjClose") or latest_price.get("close")
     if current_price:
@@ -191,62 +205,61 @@ def build_context(data: dict, ticker: str) -> str:
     cp    = data["current_price"]
 
     prev_close = lp.get("adjClose") or lp.get("close", "N/A")
-    high_52w   = lp.get("adjHigh") or "N/A"
-    low_52w    = lp.get("adjLow")  or "N/A"
 
     lines = [
         f"STOCK: {ticker.upper()} — {meta.get('name', ticker)}",
         f"Description: {(meta.get('description',''))[:400]}",
         f"Exchange: {meta.get('exchangeCode','N/A')}",
         f"",
-        f"── PRICE ──",
+        f"── LIVE PRICE DATA (from Tiingo) ──",
         f"Current Price: ${cp}",
         f"Previous Close: ${prev_close}",
-        f"Market Cap: {fmt_num(fl.get('marketCap'))}",
-        f"EPS (TTM): {fl.get('trailingEps12m', 'N/A')}",
-        f"P/E (TTM): {fl.get('peRatio', 'N/A')}",
-        f"Shares Outstanding: {fmt_num(fl.get('sharesOutstanding',''), '')}",
-        f"",
+        f"Open: {lp.get('open','N/A')} | High: {lp.get('high','N/A')} | Low: {lp.get('low','N/A')}",
+        f"Volume: {lp.get('volume','N/A')}",
     ]
 
-    # Quarterly income
-    lines.append("── QUARTERLY INCOME (recent 4) ──")
-    for d in data["quarterly_income"]:
-        lines.append(
-            f"  {d.get('_date','?')[:10]}: "
-            f"Revenue={fmt_num(d.get('revenue'))} "
-            f"NetIncome={fmt_num(d.get('netIncome'))} "
-            f"GrossProfit={fmt_num(d.get('grossProfit'))} "
-            f"OperatingIncome={fmt_num(d.get('operatingIncome'))} "
-            f"EPS={d.get('eps','N/A')}"
-        )
+    # Add fundamentals if available
+    if fl:
+        lines += [
+            f"Market Cap: {fmt_num(fl.get('marketCap'))}",
+            f"EPS (TTM): {fl.get('trailingEps12m', 'N/A')}",
+            f"P/E (TTM): {fl.get('peRatio', 'N/A')}",
+            f"Shares Outstanding: {fmt_num(fl.get('sharesOutstanding',''), '')}",
+        ]
 
-    lines.append("\n── ANNUAL INCOME (recent 4) ──")
-    for d in data["annual_income"]:
-        lines.append(
-            f"  {d.get('_date','?')[:10]}: "
-            f"Revenue={fmt_num(d.get('revenue'))} "
-            f"NetIncome={fmt_num(d.get('netIncome'))} "
-            f"EPS={d.get('eps','N/A')}"
-        )
+    has_statements = bool(data.get("quarterly_income") or data.get("annual_income"))
 
-    lines.append("\n── ANNUAL CASH FLOW (recent 2) ──")
-    for d in data["annual_cashflow"]:
+    if has_statements:
+        lines.append("\n── QUARTERLY INCOME (recent 4) ──")
+        for d in data["quarterly_income"]:
+            lines.append(
+                f"  {d.get('_date','?')[:10]}: "
+                f"Revenue={fmt_num(d.get('revenue'))} "
+                f"NetIncome={fmt_num(d.get('netIncome'))} "
+                f"GrossProfit={fmt_num(d.get('grossProfit'))} "
+                f"EPS={d.get('eps','N/A')}"
+            )
+        lines.append("\n── ANNUAL INCOME (recent 4) ──")
+        for d in data["annual_income"]:
+            lines.append(
+                f"  {d.get('_date','?')[:10]}: "
+                f"Revenue={fmt_num(d.get('revenue'))} "
+                f"NetIncome={fmt_num(d.get('netIncome'))} "
+                f"EPS={d.get('eps','N/A')}"
+            )
+        lines.append("\n── ANNUAL CASH FLOW ──")
+        for d in data["annual_cashflow"]:
+            lines.append(
+                f"  {d.get('_date','?')[:10]}: "
+                f"OperatingCF={fmt_num(d.get('netCashFromOperatingActivities'))} "
+                f"CapEx={fmt_num(d.get('capitalExpenditures'))}"
+            )
+    else:
         lines.append(
-            f"  {d.get('_date','?')[:10]}: "
-            f"OperatingCF={fmt_num(d.get('netCashFromOperatingActivities'))} "
-            f"CapEx={fmt_num(d.get('capitalExpenditures'))} "
-            f"FreeCF={fmt_num(d.get('freeCashFlow'))}"
-        )
-
-    lines.append("\n── BALANCE SHEET (recent) ──")
-    for d in data["quarterly_balance"][:2]:
-        lines.append(
-            f"  {d.get('_date','?')[:10]}: "
-            f"TotalAssets={fmt_num(d.get('totalAssets'))} "
-            f"TotalDebt={fmt_num(d.get('totalDebt'))} "
-            f"Cash={fmt_num(d.get('cashAndEquivalents'))} "
-            f"Equity={fmt_num(d.get('totalEquity'))}"
+            "\nNOTE: Detailed financial statements not available from data feed. "
+            "Please use your training knowledge of this company's recent earnings, "
+            "revenue, margins, EPS, and cash flow to complete the analysis. "
+            "Focus on the most recently reported quarter and fiscal year."
         )
 
     return "\n".join(str(x) for x in lines)
