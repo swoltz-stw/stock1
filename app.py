@@ -2,7 +2,6 @@ import streamlit as st
 import anthropic
 import requests
 import json
-import time
 import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -45,15 +44,15 @@ st.markdown('<p class="main-header">📈 Stock Evaluator AI</p>', unsafe_allow_h
 st.markdown('<p class="sub-header">Earnings analysis · Price targets · News · Dividends — powered by Claude AI</p>', unsafe_allow_html=True)
 
 # ── API Keys ──────────────────────────────────────────────────────────────────
-_ant = get_secret("ANTHROPIC_API_KEY")
-_av  = get_secret("ALPHA_VANTAGE_API_KEY")
-_nws = get_secret("NEWS_API_KEY")
+_ant  = get_secret("ANTHROPIC_API_KEY")
+_poly = get_secret("POLYGON_API_KEY")
+_nws  = get_secret("NEWS_API_KEY")
 
 with st.expander("⚙️ API Keys (stored only for this session)", expanded=not _ant):
     c1, c2, c3 = st.columns(3)
-    with c1: anthropic_key = st.text_input("Anthropic API Key",       value=_ant, type="password", help="console.anthropic.com")
-    with c2: av_key        = st.text_input("Alpha Vantage API Key",   value=_av,  type="password", help="alphavantage.co — free, 25 req/day")
-    with c3: news_key      = st.text_input("News API Key (optional)", value=_nws, type="password", help="newsapi.org — free")
+    with c1: anthropic_key = st.text_input("Anthropic API Key",       value=_ant,  type="password", help="console.anthropic.com")
+    with c2: poly_key      = st.text_input("Polygon.io API Key",      value=_poly, type="password", help="polygon.io — free, unlimited calls")
+    with c3: news_key      = st.text_input("News API Key (optional)", value=_nws,  type="password", help="newsapi.org — free")
 
 st.markdown("### Enter a Stock Ticker")
 ci, cb = st.columns([3, 1])
@@ -62,98 +61,107 @@ with cb: analyze_btn  = st.button("🔍 Analyze", use_container_width=True, type
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ALPHA VANTAGE DATA LAYER
+# POLYGON.IO DATA LAYER
 # ══════════════════════════════════════════════════════════════════════════════
 
-AV_BASE = "https://www.alphavantage.co/query"
+POLY_BASE = "https://api.polygon.io"
 
-def av_get(params: dict, api_key: str) -> dict | None:
-    """Call Alpha Vantage API. Returns dict or None on error."""
+def poly_get(path: str, api_key: str, params: dict = None) -> dict | None:
+    """Call Polygon.io API. Raises RuntimeError on auth/rate issues."""
     try:
-        p = {**params, "apikey": api_key}
-        r = requests.get(AV_BASE, params=p, timeout=15)
+        p = params or {}
+        p["apiKey"] = api_key
+        r = requests.get(f"{POLY_BASE}{path}", params=p, timeout=15)
+        if r.status_code == 403:
+            raise RuntimeError("Polygon.io API key is invalid or unauthorized. Please check your key.")
+        if r.status_code == 429:
+            raise RuntimeError("Polygon.io rate limit hit. Please wait a moment and try again.")
         if r.status_code != 200:
-            return None
+            raise RuntimeError(f"Polygon.io returned HTTP {r.status_code} for {path}")
         data = r.json()
-        # AV returns {"Note": "..."} on rate limit, {"Information": "..."} on bad key
-        if "Note" in data or "Information" in data:
-            msg = data.get("Note") or data.get("Information","")
-            raise RuntimeError(f"Alpha Vantage API issue: {msg[:200]}")
+        if data.get("status") == "ERROR":
+            raise RuntimeError(f"Polygon.io error: {data.get('error', 'unknown')}")
         return data
     except RuntimeError:
         raise
     except Exception as e:
-        raise RuntimeError(f"Alpha Vantage request failed: {e}")
+        raise RuntimeError(f"Polygon.io request failed: {e}")
 
 
 def get_stock_data(ticker: str, api_key: str) -> dict:
-    """Fetch all needed data from Alpha Vantage. Returns unified data dict."""
+    """Fetch all needed data from Polygon.io. Returns unified data dict."""
 
-    PAUSE = 13  # Alpha Vantage free tier: max 5 requests/min = 1 per 12s to be safe
-
-    # 1. Company overview (the main data source — has almost everything)
-    overview = av_get({"function": "OVERVIEW", "symbol": ticker}, api_key)
-    if not overview or not overview.get("Symbol"):
+    # 1. Ticker details (company info, description, market cap etc.)
+    details = poly_get(f"/v3/reference/tickers/{ticker}", api_key)
+    if not details or not details.get("results"):
         raise RuntimeError(
-            f"Could not find data for **{ticker}**. "
-            f"Please check the ticker symbol is correct (e.g. NVDA, AAPL, TSLA).\n\n"
-            f"Note: Alpha Vantage free tier allows 25 requests/day and 5 per minute. "
-            f"If you searched recently, wait 1 minute and try again."
+            f"Could not find **{ticker}** on Polygon.io. "
+            f"Please check the ticker symbol is correct (e.g. NVDA, AAPL, TSLA)."
         )
+    info = details["results"]
 
-    # 2. Global quote (real-time price)
-    time.sleep(PAUSE)
-    quote_data = av_get({"function": "GLOBAL_QUOTE", "symbol": ticker}, api_key)
-    quote = quote_data.get("Global Quote", {}) if quote_data else {}
+    # 2. Previous day close (most recent price — free tier doesn't have real-time)
+    prev_close = poly_get(f"/v2/aggs/ticker/{ticker}/prev", api_key)
+    price_data = prev_close.get("results", [{}])[0] if prev_close and prev_close.get("results") else {}
 
-    # 3. Income statement
-    time.sleep(PAUSE)
-    income_data = av_get({"function": "INCOME_STATEMENT", "symbol": ticker}, api_key)
-    annual_reports    = income_data.get("annualReports", [])[:4]    if income_data else []
-    quarterly_reports = income_data.get("quarterlyReports", [])[:4] if income_data else []
+    # 3. Snapshot (includes current price, day change, etc.)
+    snapshot = poly_get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}", api_key)
+    snap     = snapshot.get("ticker", {}) if snapshot else {}
 
-    # 4. Cash flow statement
-    time.sleep(PAUSE)
-    cashflow_data = av_get({"function": "CASH_FLOW", "symbol": ticker}, api_key)
-    annual_cashflow    = cashflow_data.get("annualReports", [])[:2]    if cashflow_data else []
-    quarterly_cashflow = cashflow_data.get("quarterlyReports", [])[:2] if cashflow_data else []
+    # 4. Income statements — last 8 quarters + 4 annual
+    income_q = poly_get("/vX/reference/financials", api_key, {
+        "ticker": ticker, "timeframe": "quarterly", "limit": 8, "sort": "period_of_report_date", "order": "desc"
+    })
+    income_a = poly_get("/vX/reference/financials", api_key, {
+        "ticker": ticker, "timeframe": "annual", "limit": 4, "sort": "period_of_report_date", "order": "desc"
+    })
 
-    # 5. Balance sheet
-    time.sleep(PAUSE)
-    balance_data = av_get({"function": "BALANCE_SHEET", "symbol": ticker}, api_key)
-    annual_balance = balance_data.get("annualReports", [])[:2] if balance_data else []
+    quarterly_financials = income_q.get("results", []) if income_q else []
+    annual_financials    = income_a.get("results", []) if income_a else []
 
-    # 6. Earnings (EPS history + estimates)
-    time.sleep(PAUSE)
-    earnings_data = av_get({"function": "EARNINGS", "symbol": ticker}, api_key)
-    annual_earnings    = earnings_data.get("annualEarnings", [])[:4]    if earnings_data else []
-    quarterly_earnings = earnings_data.get("quarterlyEarnings", [])[:4] if earnings_data else []
+    # 5. Dividends
+    today     = datetime.now().strftime("%Y-%m-%d")
+    next_6mo  = (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")
+    past_1yr  = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
 
-    # Derive current price from quote or overview
+    divs_upcoming = poly_get("/v3/reference/dividends", api_key, {
+        "ticker": ticker, "ex_dividend_date.gte": today, "ex_dividend_date.lte": next_6mo, "limit": 5
+    })
+    divs_history = poly_get("/v3/reference/dividends", api_key, {
+        "ticker": ticker, "ex_dividend_date.gte": past_1yr, "ex_dividend_date.lte": today, "limit": 8
+    })
+
+    upcoming_divs = divs_upcoming.get("results", []) if divs_upcoming else []
+    history_divs  = divs_history.get("results",  []) if divs_history  else []
+
+    # 6. Recent news
+    news_data = poly_get("/v2/reference/news", api_key, {
+        "ticker": ticker, "limit": 10, "sort": "published_utc", "order": "desc"
+    })
+    news_articles = news_data.get("results", []) if news_data else []
+
+    # Derive best available price
     current_price = (
-        quote.get("05. price") or
-        overview.get("AnalystTargetPrice") and None or  # don't use target as price
-        None
+        snap.get("day", {}).get("c") or
+        snap.get("prevDay", {}).get("c") or
+        price_data.get("c") or
+        info.get("market_cap") and None or
+        "N/A"
     )
-    if not current_price:
-        # fallback: use 52-week range midpoint
-        hi = overview.get("52WeekHigh")
-        lo = overview.get("52WeekLow")
-        if hi and lo:
-            current_price = str(round((float(hi) + float(lo)) / 2, 2))
+    if current_price and current_price != "N/A":
+        current_price = str(round(float(current_price), 2))
 
     return {
-        "overview":            overview,
-        "quote":               quote,
-        "annual_income":       annual_reports,
-        "quarterly_income":    quarterly_reports,
-        "annual_cashflow":     annual_cashflow,
-        "quarterly_cashflow":  quarterly_cashflow,
-        "annual_balance":      annual_balance,
-        "annual_earnings":     annual_earnings,
-        "quarterly_earnings":  quarterly_earnings,
-        "current_price":       current_price,
-        "source":              "Alpha Vantage",
+        "info":                  info,
+        "snap":                  snap,
+        "price_data":            price_data,
+        "quarterly_financials":  quarterly_financials,
+        "annual_financials":     annual_financials,
+        "upcoming_divs":         upcoming_divs,
+        "history_divs":          history_divs,
+        "news_articles":         news_articles,
+        "current_price":         current_price,
+        "source":                "Polygon.io",
     }
 
 
@@ -161,97 +169,117 @@ def get_stock_data(ticker: str, api_key: str) -> dict:
 # CONTEXT BUILDER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_context(data: dict, ticker: str) -> str:
-    o  = data["overview"]
-    q  = data["quote"]
-    cp = data["current_price"] or "N/A"
+def safe_float(v, decimals=2):
+    try: return round(float(v), decimals)
+    except: return None
 
-    def ov(key): return o.get(key, "N/A")
+def fmt_num(v, prefix="$"):
+    try:
+        v = float(v)
+        if abs(v) >= 1e12: return f"{prefix}{v/1e12:.2f}T"
+        if abs(v) >= 1e9:  return f"{prefix}{v/1e9:.2f}B"
+        if abs(v) >= 1e6:  return f"{prefix}{v/1e6:.2f}M"
+        return f"{prefix}{v:,.2f}"
+    except: return str(v) if v else "N/A"
+
+def extract_financials(report: dict) -> dict:
+    """Pull key line items from a Polygon financials report."""
+    ic = report.get("financials", {}).get("income_statement", {})
+    bs = report.get("financials", {}).get("balance_sheet", {})
+    cf = report.get("financials", {}).get("cash_flow_statement", {})
+
+    def val(d, key): return d.get(key, {}).get("value")
+
+    return {
+        "period":        report.get("end_date", "?"),
+        "revenue":       val(ic, "revenues"),
+        "net_income":    val(ic, "net_income_loss"),
+        "gross_profit":  val(ic, "gross_profit"),
+        "operating_income": val(ic, "operating_income_loss"),
+        "eps_basic":     val(ic, "basic_earnings_per_share"),
+        "eps_diluted":   val(ic, "diluted_earnings_per_share"),
+        "operating_cf":  val(cf, "net_cash_flow_from_operating_activities"),
+        "capex":         val(cf, "capital_expenditure"),
+        "total_assets":  val(bs, "assets"),
+        "total_debt":    val(bs, "long_term_debt"),
+        "cash":          val(bs, "cash_and_equivalents"),
+        "equity":        val(bs, "equity"),
+    }
+
+
+def build_context(data: dict, ticker: str) -> str:
+    info  = data["info"]
+    snap  = data["snap"]
+    cp    = data["current_price"]
+    pd    = data["price_data"]
+
+    # Snap data
+    day       = snap.get("day", {})
+    prev_day  = snap.get("prevDay", {})
+    change_pct = snap.get("todaysChangePerc")
 
     lines = [
-        f"STOCK: {ticker.upper()} — {ov('Name')}",
-        f"Sector: {ov('Sector')} | Industry: {ov('Industry')}",
-        f"Description: {ov('Description')[:300]}",
+        f"STOCK: {ticker.upper()} — {info.get('name', ticker)}",
+        f"Sector: {info.get('sic_description','N/A')}",
+        f"Description: {(info.get('description',''))[:400]}",
+        f"Employees: {info.get('total_employees','N/A')} | Listed: {info.get('list_date','N/A')}",
+        f"Market Cap: {fmt_num(info.get('market_cap'), '$')}",
+        f"Share Class Shares Outstanding: {fmt_num(info.get('share_class_shares_outstanding',''), '')}",
         f"",
-        f"── PRICE & VALUATION ──",
+        f"── PRICE ──",
         f"Current Price: ${cp}",
-        f"52-Week Range: ${ov('52WeekLow')} – ${ov('52WeekHigh')}",
-        f"50-Day MA: ${ov('50DayMovingAverage')} | 200-Day MA: ${ov('200DayMovingAverage')}",
-        f"Market Cap: ${ov('MarketCapitalization')}",
-        f"P/E (TTM): {ov('PERatio')} | Forward P/E: {ov('ForwardPE')} | PEG: {ov('PEGRatio')}",
-        f"Price/Sales: {ov('PriceToSalesRatioTTM')} | Price/Book: {ov('PriceToBookRatio')}",
-        f"EV/EBITDA: {ov('EVToEBITDA')} | EV/Revenue: {ov('EVToRevenue')}",
+        f"Today: Open=${day.get('o','N/A')} High=${day.get('h','N/A')} Low=${day.get('l','N/A')} Vol={fmt_num(day.get('v',''), '')}",
+        f"Prev Close: ${prev_day.get('c', pd.get('c','N/A'))}",
+        f"Today's Change: {f'{change_pct:+.2f}%' if change_pct else 'N/A'}",
+        f"52-Week High: ${snap.get('day', {}).get('h','N/A')} (today high — use with context)",
         f"",
-        f"── EARNINGS & REVENUE ──",
-        f"EPS (TTM): {ov('EPS')} | Diluted EPS (TTM): {ov('DilutedEPSTTM')}",
-        f"Revenue (TTM): ${ov('RevenueTTM')}",
-        f"Gross Profit (TTM): ${ov('GrossProfitTTM')}",
-        f"EBITDA: ${ov('EBITDA')}",
-        f"Revenue/Share: {ov('RevenuePerShareTTM')}",
-        f"Quarterly Revenue Growth (YoY): {ov('QuarterlyRevenueGrowthYOY')}",
-        f"Quarterly Earnings Growth (YoY): {ov('QuarterlyEarningsGrowthYOY')}",
-        f"",
-        f"── PROFITABILITY ──",
-        f"Profit Margin: {ov('ProfitMargin')} | Operating Margin: {ov('OperatingMarginTTM')}",
-        f"Return on Assets: {ov('ReturnOnAssetsTTM')} | Return on Equity: {ov('ReturnOnEquityTTM')}",
-        f"",
-        f"── BALANCE SHEET & CASH ──",
-        f"Total Cash (MRQ): ${ov('CashAndCashEquivalentsAtCarryingValue') or 'N/A'}",
-        f"Total Debt (MRQ): {ov('TotalDebt') or 'N/A'}",  
-        f"Book Value/Share: {ov('BookValue')}",
-        f"Beta: {ov('Beta')}",
-        f"",
-        f"── DIVIDENDS ──",
-        f"Dividend/Share: {ov('DividendPerShare')} | Dividend Yield: {ov('DividendYield')}",
-        f"Ex-Dividend Date: {ov('ExDividendDate')} | Dividend Date: {ov('DividendDate')}",
-        f"",
-        f"── ANALYST COVERAGE ──",
-        f"Analyst Target Price: ${ov('AnalystTargetPrice')}",
-        f"Strong Buy: {ov('AnalystRatingStrongBuy')} | Buy: {ov('AnalystRatingBuy')} | Hold: {ov('AnalystRatingHold')} | Sell: {ov('AnalystRatingSell')} | Strong Sell: {ov('AnalystRatingStrongSell')}",
-        f"",
-        f"── RECENT QUARTERLY INCOME (last 4 quarters) ──",
     ]
 
-    for r in data["quarterly_income"][:4]:
+    # Quarterly financials
+    lines.append("── QUARTERLY FINANCIALS (most recent 4 quarters) ──")
+    for r in data["quarterly_financials"][:4]:
+        f = extract_financials(r)
         lines.append(
-            f"  {r.get('fiscalDateEnding','?')}: Revenue=${r.get('totalRevenue','N/A')}, "
-            f"Net Income=${r.get('netIncome','N/A')}, "
-            f"Gross Profit=${r.get('grossProfit','N/A')}, "
-            f"Operating Income=${r.get('operatingIncome','N/A')}"
+            f"  {f['period']}: Rev={fmt_num(f['revenue'])} NetIncome={fmt_num(f['net_income'])} "
+            f"GrossProfit={fmt_num(f['gross_profit'])} OperatingIncome={fmt_num(f['operating_income'])} "
+            f"EPS={f['eps_diluted']} OperatingCF={fmt_num(f['operating_cf'])}"
         )
 
-    lines.append(f"\n── RECENT QUARTERLY EPS ──")
-    for r in data["quarterly_earnings"][:4]:
+    # Annual financials
+    lines.append("\n── ANNUAL FINANCIALS (most recent 4 years) ──")
+    for r in data["annual_financials"][:4]:
+        f = extract_financials(r)
         lines.append(
-            f"  {r.get('fiscalDateEnding','?')}: Reported EPS={r.get('reportedEPS','N/A')}, "
-            f"Estimated EPS={r.get('estimatedEPS','N/A')}, "
-            f"Surprise={r.get('surprise','N/A')} ({r.get('surprisePercentage','N/A')}%)"
+            f"  {f['period']}: Rev={fmt_num(f['revenue'])} NetIncome={fmt_num(f['net_income'])} "
+            f"EPS={f['eps_diluted']} OperatingCF={fmt_num(f['operating_cf'])} "
+            f"Cash={fmt_num(f['cash'])} TotalDebt={fmt_num(f['total_debt'])} Equity={fmt_num(f['equity'])}"
         )
 
-    lines.append(f"\n── ANNUAL INCOME (last 4 years) ──")
-    for r in data["annual_income"][:4]:
-        lines.append(
-            f"  {r.get('fiscalDateEnding','?')}: Revenue=${r.get('totalRevenue','N/A')}, "
-            f"Net Income=${r.get('netIncome','N/A')}"
-        )
+    # Dividends
+    lines.append("\n── DIVIDENDS ──")
+    if data["upcoming_divs"]:
+        for d in data["upcoming_divs"][:3]:
+            lines.append(
+                f"  UPCOMING: Ex-Date={d.get('ex_dividend_date','N/A')} "
+                f"Pay-Date={d.get('pay_date','N/A')} Amount=${d.get('cash_amount','N/A')} "
+                f"Frequency={d.get('frequency','N/A')}"
+            )
+    else:
+        lines.append("  No upcoming dividends found.")
+    if data["history_divs"]:
+        lines.append("  Recent history:")
+        for d in data["history_divs"][:4]:
+            lines.append(f"    Ex-Date={d.get('ex_dividend_date','N/A')} Amount=${d.get('cash_amount','N/A')}")
 
-    lines.append(f"\n── ANNUAL FREE CASH FLOW ──")
-    for r in data["annual_cashflow"][:2]:
-        lines.append(
-            f"  {r.get('fiscalDateEnding','?')}: Operating CF=${r.get('operatingCashflow','N/A')}, "
-            f"CapEx=${r.get('capitalExpenditures','N/A')}"
-        )
-
-    return "\n".join(lines)
+    return "\n".join(str(x) for x in lines)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MISC HELPERS
+# HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_news(company: str, api_key: str) -> list:
-    if not api_key:
-        return []
+def get_news_newsapi(company: str, api_key: str) -> list:
+    if not api_key: return []
     try:
         r = requests.get("https://newsapi.org/v2/everything",
             params={"q": company, "sortBy": "publishedAt", "pageSize": 10, "language": "en", "apiKey": api_key},
@@ -298,29 +326,30 @@ if analyze_btn and ticker_input:
     if not anthropic_key:
         st.error("Please enter your Anthropic API key above.")
         st.stop()
-    if not av_key:
-        st.error("Please enter your Alpha Vantage API key above. Get a free one at alphavantage.co")
+    if not poly_key:
+        st.error("Please enter your Polygon.io API key above. Get a free one at polygon.io")
         st.stop()
 
     client = anthropic.Anthropic(api_key=anthropic_key)
 
-    with st.spinner(f"Fetching data for {ticker} from Alpha Vantage… (this takes ~60 seconds on the free plan)"):
+    with st.spinner(f"Fetching data for {ticker} from Polygon.io…"):
         try:
-            data = get_stock_data(ticker, av_key)
+            data = get_stock_data(ticker, poly_key)
         except Exception as e:
             st.error("❌ Could not load stock data")
             for line in str(e).split("\n"):
                 if line.strip(): st.markdown(line)
             st.stop()
 
-    o             = data["overview"]
-    company_name  = o.get("Name", ticker)
-    current_price = data["current_price"] or "N/A"
-    sector        = o.get("Sector", "N/A")
-    industry      = o.get("Industry", "N/A")
+    info         = data["info"]
+    company_name = info.get("name", ticker)
+    cp           = data["current_price"]
 
-    st.markdown(f"## {company_name} ({ticker}) <span class='data-badge'>Alpha Vantage</span>", unsafe_allow_html=True)
-    st.markdown(f"**Price:** ${current_price} &nbsp;|&nbsp; **Sector:** {sector} &nbsp;|&nbsp; **Industry:** {industry}", unsafe_allow_html=True)
+    st.markdown(f"## {company_name} ({ticker}) <span class='data-badge'>Polygon.io</span>", unsafe_allow_html=True)
+    snap = data["snap"]
+    change_pct = snap.get("todaysChangePerc")
+    change_str = f" &nbsp;({change_pct:+.2f}% today)" if change_pct else ""
+    st.markdown(f"**Price:** ${cp}{change_str} &nbsp;|&nbsp; **{info.get('sic_description','N/A')}**", unsafe_allow_html=True)
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
     context = build_context(data, ticker)
@@ -345,23 +374,23 @@ Respond ONLY with valid JSON:
     {{"name": "Revenue Growth",          "rating": "Excellent|Good|Neutral|Bad", "commentary": "one sentence"}},
     {{"name": "Profitability & Margins", "rating": "Excellent|Good|Neutral|Bad", "commentary": "one sentence"}},
     {{"name": "Earnings Per Share",      "rating": "Excellent|Good|Neutral|Bad", "commentary": "one sentence"}},
-    {{"name": "Earnings Surprises",      "rating": "Excellent|Good|Neutral|Bad", "commentary": "one sentence"}},
     {{"name": "Cash Flow Generation",    "rating": "Excellent|Good|Neutral|Bad", "commentary": "one sentence"}},
     {{"name": "Balance Sheet Health",    "rating": "Excellent|Good|Neutral|Bad", "commentary": "one sentence"}},
     {{"name": "Valuation",               "rating": "Excellent|Good|Neutral|Bad", "commentary": "one sentence"}},
     {{"name": "Analyst Sentiment",       "rating": "Excellent|Good|Neutral|Bad", "commentary": "one sentence"}},
+    {{"name": "Revenue vs Expectations", "rating": "Excellent|Good|Neutral|Bad", "commentary": "one sentence"}},
     {{"name": "Cost Management",         "rating": "Excellent|Good|Neutral|Bad", "commentary": "one sentence"}},
     {{"name": "Return on Capital",       "rating": "Excellent|Good|Neutral|Bad", "commentary": "one sentence"}}
   ]
 }}"""))
-                overall = ed.get("overall_rating", "Neutral")
+                overall = ed.get("overall_rating","Neutral")
                 st.markdown(
                     f"<div class='metric-card'><strong>Overall Rating:</strong> "
                     f"<span class='{rcls(overall)}'>{overall}</span><br>"
                     f"<span style='color:#444'>{ed.get('overall_summary','')}</span></div>",
                     unsafe_allow_html=True)
                 st.markdown("#### Category Breakdown")
-                for cat in ed.get("categories", []):
+                for cat in ed.get("categories",[]):
                     display_rating(cat["name"], cat["rating"], cat.get("commentary",""))
             except Exception as e:
                 st.error(f"Earnings analysis error: {e}")
@@ -376,7 +405,7 @@ Respond ONLY with valid JSON:
                     f"""Senior equity analyst view on {ticker} ({company_name}).
 
 {context}
-Current price: ${current_price}
+Current price: ${cp}
 
 Respond ONLY with valid JSON:
 {{
@@ -396,9 +425,9 @@ Respond ONLY with valid JSON:
 }}"""))
 
                 ca, cb2, cc = st.columns(3)
-                ca.metric("Outlook",        ins.get("overall_outlook","Neutral"))
+                ca.metric("Outlook",         ins.get("overall_outlook","Neutral"))
                 cb2.metric("Recommendation", ins.get("buy_sell_hold","Hold"))
-                cc.metric("Conviction",     ins.get("conviction","Medium"))
+                cc.metric("Conviction",      ins.get("conviction","Medium"))
                 st.markdown(f"<div class='metric-card'>{ins.get('outlook_rationale','')}</div>", unsafe_allow_html=True)
 
                 cl, cr = st.columns(2)
@@ -413,13 +442,13 @@ Respond ONLY with valid JSON:
                 periods = [("next_day","Next Day"),("next_week","Next Week"),("next_month","Next Month"),("next_quarter","Next Quarter"),("next_year","Next Year")]
                 pt_cols = st.columns(5)
                 for i,(key,label) in enumerate(periods):
-                    pt  = ins.get("price_targets",{}).get(key,{})
-                    tgt = pt.get("target",0)
-                    d   = pt.get("direction","Flat")
+                    pt    = ins.get("price_targets",{}).get(key,{})
+                    tgt   = pt.get("target",0)
+                    d     = pt.get("direction","Flat")
                     arrow = "▲" if d=="Up" else "▼" if d=="Down" else "→"
                     cls   = "price-up" if d=="Up" else "price-down" if d=="Down" else ""
                     try:
-                        pct = ((float(tgt)-float(current_price))/float(current_price))*100
+                        pct = ((float(tgt)-float(cp))/float(cp))*100
                         pct_str = f"{pct:+.1f}%"
                     except: pct_str = ""
                     with pt_cols[i]:
@@ -437,7 +466,25 @@ Respond ONLY with valid JSON:
     # ── Tab 3: News ───────────────────────────────────────────────────────────
     with tabs[2]:
         st.markdown("### Stock in the News")
-        articles = get_news(company_name, news_key)
+
+        # Use Polygon news first (already fetched, no extra API call), fallback to NewsAPI
+        poly_news = data.get("news_articles", [])
+        newsapi_articles = get_news_newsapi(company_name, news_key)
+
+        # Format Polygon articles to match NewsAPI shape
+        articles = []
+        for a in poly_news[:10]:
+            articles.append({
+                "title":       a.get("title",""),
+                "url":         a.get("article_url","#"),
+                "description": a.get("description","") or " ".join(a.get("keywords",[])),
+                "publishedAt": a.get("published_utc","")[:10],
+                "source":      {"name": a.get("publisher",{}).get("name","")},
+            })
+        # Supplement with NewsAPI if available
+        if newsapi_articles:
+            articles = (articles + newsapi_articles)[:12]
+
         if articles:
             with st.spinner("Analyzing news with Claude AI…"):
                 headlines = "\n".join([f"- {a['title']} ({a.get('source',{}).get('name','')})" for a in articles[:10]])
@@ -500,50 +547,48 @@ Respond ONLY with valid JSON:
                     f"<br><small style='color:#555'>{desc[:150]}{'…' if len(desc)>150 else ''}</small>"
                     f"</div>", unsafe_allow_html=True)
         else:
-            st.info("No news found. Add a News API key above to enable this section.")
-            st.markdown("Free key at [newsapi.org](https://newsapi.org)")
+            st.info("No news found for this ticker.")
 
     # ── Tab 4: Dividends ──────────────────────────────────────────────────────
     with tabs[3]:
         st.markdown("### Dividend Analysis")
-        div_per_share = o.get("DividendPerShare","0")
-        div_yield     = o.get("DividendYield","0")
-        ex_div_date   = o.get("ExDividendDate","N/A")
-        div_date      = o.get("DividendDate","N/A")
+        upcoming = data.get("upcoming_divs", [])
+        history  = data.get("history_divs", [])
+        next_div = upcoming[0] if upcoming else (history[0] if history else None)
 
-        try:
-            has_dividend = float(div_per_share or 0) > 0
-        except:
-            has_dividend = False
+        if next_div or history:
+            # Calculate annual yield from history
+            annual_div = sum(float(d.get("cash_amount",0)) for d in history[:4]) if history else 0
+            div_yield  = round((annual_div / float(cp)) * 100, 2) if cp != "N/A" and annual_div > 0 else None
 
-        if has_dividend:
             with st.spinner("Analyzing dividend with Claude AI…"):
                 try:
+                    div_context = "\n".join([
+                        f"  Ex-Date: {d.get('ex_dividend_date','N/A')} | Pay-Date: {d.get('pay_date','N/A')} | Amount: ${d.get('cash_amount','N/A')} | Freq: {d.get('frequency','N/A')}"
+                        for d in (upcoming + history)[:6]
+                    ])
+
                     dd = parse_json(ask_claude(client,
                         "You are a dividend investing expert. Return only valid JSON, no markdown.",
                         f"""Dividend analysis for {ticker} ({company_name}):
-Current Price: ${current_price}
-Annual Dividend/Share: ${div_per_share}
-Dividend Yield: {div_yield}
-Ex-Dividend Date: {ex_div_date}
-Dividend Payment Date: {div_date}
-P/E Ratio: {o.get('PERatio','N/A')}
-Payout Ratio: {o.get('PayoutRatio','N/A')}
-EPS (TTM): {o.get('EPS','N/A')}
-Free Cash Flow: {data['annual_cashflow'][0].get('operatingCashflow','N/A') if data['annual_cashflow'] else 'N/A'}
+Current Price: ${cp}
+Estimated Annual Dividend: ${annual_div:.4f}
+Estimated Yield: {div_yield}%
+Recent dividend records:
+{div_context}
 
 {context[:1500]}
 
 Respond ONLY with valid JSON:
 {{
-  "ex_dividend_date_human":"human readable date",
-  "must_own_by":"date you must own by (day before ex-div)",
-  "payment_date_estimate":"estimated payment date",
+  "ex_dividend_date_human":"human readable next ex-div date",
+  "must_own_by":"date you must own shares by (day before ex-div)",
+  "payment_date_estimate":"next payment date",
   "quarterly_dividend_per_share":"dollar amount",
   "annual_yield_pct":"e.g. 3.2%",
   "yield_vs_average":"Above Average|Average|Below Average",
   "dividend_safety_rating":"Very Safe|Safe|Moderate|At Risk",
-  "dividend_safety_rationale":"2-3 sentences on payout ratio and cash flow coverage",
+  "dividend_safety_rationale":"2-3 sentences on safety",
   "capture_recommendation":"Strong Buy for Dividend|Buy for Dividend|Neutral|Avoid for Dividend",
   "capture_rationale":"2-3 sentences on whether capturing the dividend makes sense",
   "dividend_growth_outlook":"Growing|Stable|At Risk of Cut",
@@ -553,13 +598,12 @@ Respond ONLY with valid JSON:
                     st.markdown(
                         f"<div class='dividend-highlight'><h4 style='margin:0 0 12px 0'>💰 Dividend Summary — {ticker}</h4>"
                         f"<table style='width:100%;border-collapse:collapse'>"
-                        f"<tr><td style='padding:6px 0;font-weight:600'>Annual Dividend/Share:</td><td>${div_per_share}</td></tr>"
-                        f"<tr><td style='padding:6px 0;font-weight:600'>Dividend Yield:</td><td>{dd.get('annual_yield_pct','N/A')}</td></tr>"
+                        f"<tr><td style='padding:6px 0;font-weight:600'>Est. Annual Dividend:</td><td>${annual_div:.4f}/share</td></tr>"
+                        f"<tr><td style='padding:6px 0;font-weight:600'>Est. Dividend Yield:</td><td>{dd.get('annual_yield_pct','N/A')}</td></tr>"
                         f"<tr><td style='padding:6px 0;font-weight:600'>Quarterly Per Share:</td><td>{dd.get('quarterly_dividend_per_share','N/A')}</td></tr>"
-                        f"<tr><td style='padding:6px 0;font-weight:600'>Ex-Dividend Date:</td><td><strong>{dd.get('ex_dividend_date_human', ex_div_date)}</strong></td></tr>"
+                        f"<tr><td style='padding:6px 0;font-weight:600'>Next Ex-Dividend Date:</td><td><strong>{dd.get('ex_dividend_date_human','N/A')}</strong></td></tr>"
                         f"<tr><td style='padding:6px 0;font-weight:600'>⚡ Must Own By:</td><td><strong style='color:#c62828'>{dd.get('must_own_by','N/A')}</strong></td></tr>"
-                        f"<tr><td style='padding:6px 0;font-weight:600'>Payment Date:</td><td>{dd.get('payment_date_estimate', div_date)}</td></tr>"
-                        f"<tr><td style='padding:6px 0;font-weight:600'>Payout Ratio:</td><td>{o.get('PayoutRatio','N/A')}</td></tr>"
+                        f"<tr><td style='padding:6px 0;font-weight:600'>Next Payment Date:</td><td>{dd.get('payment_date_estimate','N/A')}</td></tr>"
                         f"</table></div>", unsafe_allow_html=True)
 
                     d1,d2,d3 = st.columns(3)
@@ -569,7 +613,7 @@ Respond ONLY with valid JSON:
                     st.markdown(f"<div class='metric-card'><strong>Safety Analysis:</strong> {dd.get('dividend_safety_rationale','')}</div>", unsafe_allow_html=True)
                     rec = dd.get("capture_recommendation","Neutral")
                     st.markdown(
-                        f"<div class='metric-card'><strong>Dividend Capture Recommendation:</strong> "
+                        f"<div class='metric-card'><strong>Capture Recommendation:</strong> "
                         f"<span style='color:{'#2e7d32' if 'Buy' in rec else '#c62828' if 'Avoid' in rec else '#f57c00'};font-weight:700'>{rec}</span>"
                         f"<br>{dd.get('capture_rationale','')}</div>", unsafe_allow_html=True)
                     st.markdown("#### 💡 Key Dividend Insights")
