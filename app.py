@@ -493,7 +493,8 @@ if page == "🔍 Stock Analysis":
                         '{"name":"Return on Capital","rating":"Excellent|Good|Neutral|Bad","commentary":"one sentence"}]}'))
                     overall = ed.get("overall_rating","Neutral")
                     st.markdown(f"<div class='metric-card'><strong>Overall:</strong> <span class='{rcls(overall)}'>{overall}</span><br><span style='color:#444'>{ed.get('overall_summary','')}</span></div>", unsafe_allow_html=True)
-                    for cat in ed.get("categories",[]): display_rating(cat["name"],cat["rating"],cat.get("commentary",""))
+                    for cat in ed.get("categories",[]):
+                        display_rating(cat["name"],cat["rating"],cat.get("commentary",""))
                 except Exception as e: st.error(f"Error: {e}")
             show_glossary(GLOSSARY_EARNINGS)
 
@@ -519,9 +520,11 @@ if page == "🔍 Stock Analysis":
                     st.markdown(f"<div class='metric-card'>{ins.get('outlook_rationale','')}</div>", unsafe_allow_html=True)
                     cl,cr = st.columns(2)
                     with cl:
-                        st.markdown("#### ✅ Doing Well"); [st.markdown(f"• {p}") for p in ins.get("what_doing_well",[])]
+                        st.markdown("#### ✅ Doing Well")
+                        for p in ins.get("what_doing_well",[]): st.markdown(f"• {p}")
                     with cr:
-                        st.markdown("#### ⚠️ Risks"); [st.markdown(f"• {p}") for p in ins.get("risks_concerns",[])]
+                        st.markdown("#### ⚠️ Risks")
+                        for p in ins.get("risks_concerns",[]): st.markdown(f"• {p}")
                     st.markdown("#### 🎯 Price Targets")
                     periods=[("next_day","Next Day"),("next_week","Next Week"),("next_month","Next Month"),("next_quarter","Next Quarter"),("next_year","Next Year")]
                     ptc = st.columns(5)
@@ -568,9 +571,11 @@ if page == "🔍 Stock Analysis":
                         st.markdown(f"**Sentiment:** <span style='color:{sc};font-weight:700'>{sent}</span>", unsafe_allow_html=True)
                         ce,cc2 = st.columns(2)
                         with ce:
-                            st.markdown("#### 🚀 Exciting"); [st.markdown(f"✅ {p}") for p in nd.get("exciting_things",[])]
+                            st.markdown("#### 🚀 Exciting")
+                            for p in nd.get("exciting_things",[]): st.markdown(f"✅ {p}")
                         with cc2:
-                            st.markdown("#### 🚨 Caution"); [st.markdown(f"⚠️ {p}") for p in nd.get("caution_flags",[])]
+                            st.markdown("#### 🚨 Caution")
+                            for p in nd.get("caution_flags",[]): st.markdown(f"⚠️ {p}")
                         ee=nd.get("upcoming_earnings_estimate",{})
                         e1,e2,e3,e4 = st.columns(4)
                         e1.metric("Est. Date",ee.get("date_estimate","N/A"))
@@ -629,7 +634,8 @@ if page == "🔍 Stock Analysis":
                         rec=dd.get("capture_recommendation","Neutral")
                         rc="#2e7d32" if "Buy" in rec else "#c62828" if "Avoid" in rec else "#f57c00"
                         st.markdown(f"<div class='metric-card'><strong>Capture Rec:</strong> <span style='color:{rc};font-weight:700'>{rec}</span><br>{dd.get('capture_rationale','')}</div>", unsafe_allow_html=True)
-                        st.markdown("#### 💡 Key Insights"); [st.markdown(f"• {i}") for i in dd.get("key_insights",[])]
+                        st.markdown("#### 💡 Key Insights")
+                        for ins_item in dd.get("key_insights",[]): st.markdown(f"• {ins_item}")
                         st.caption("⚠️ Verify ex-div date with your broker.")
                     except Exception as e: st.error(f"Dividend error: {e}")
             else:
@@ -863,7 +869,7 @@ elif page == "🏢 Peer Comparison":
                     w3.metric("Highest Risk",comp.get("biggest_risk","N/A"))
                     st.markdown(f"<div class='metric-card'>{comp.get('winner_rationale','')}</div>", unsafe_allow_html=True)
                     st.markdown(f"<div class='metric-card'><strong>Recommendation:</strong> {comp.get('recommendation','')}</div>", unsafe_allow_html=True)
-                    for ins in comp.get("key_insights",[]): st.markdown(f"• {ins}")
+                    for ki in comp.get("key_insights",[]): st.markdown(f"• {ki}")
                 except Exception as e: st.error(f"Comparison error: {e}")
             for p in peers_resp.get("peers",[]): st.markdown(f"**{p['ticker']}** — {p['why']}")
             show_glossary(GLOSSARY_PEERS)
